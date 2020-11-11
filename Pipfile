@@ -6,13 +6,18 @@ verify_ssl = true
 [dev-packages]
 
 [packages]
-numpy = "==1.18.1"
-pandas = "==1.0.1"
-altair = "==4.1.0"
+numpy = "~=1.19"
+pandas = "~=1.1.4"
+altair = "~=4.1.0"
+papermill = "*"
+black = "==19.10b0"
+datasette = "~=0.51"
 pyspark = "*"
 vega = "*"
 jupyter = "*"
 
-
 [requires]
 python_version = "3.7"
+
+[pipenv]
+allow_prereleases = true
