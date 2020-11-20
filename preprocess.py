@@ -42,7 +42,7 @@ if __name__ == '__main__':
                     pm.execute_notebook(
                         'metrics.ipynb',
                         rendered_notebook,
-                        parameters=dict(metrics_file=log, output_file=the_db, wide_output_file=args.db),
+                        parameters=dict(metrics_file=log, output_file=the_db, wide_output_file=args.db, interactive=False),
                         log_output=False,
                         stdout_file=stdout,
                         stderr_file=stderr,

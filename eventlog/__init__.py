@@ -398,6 +398,36 @@ def stage_and_task_charts(task_metrics_df, noun="Time"):
 
     return alt.vconcat(stages, tasks)
 
+
+def job_and_plan_charts(plan_metrics_df, noun="Time"):
+    
+    selection = alt.selection_multi(name="SelectorName", fields=['Job ID'], empty='none')
+    job_metrics_df = plan_metrics_df.groupby(['Job ID', 'Metric Name']).sum()
+    
+    jobs = alt.Chart(
+        job_metrics_df.reset_index()
+    ).mark_bar().encode(
+        x='Job ID:N',
+        y=alt.Y('sum(Metric Value):Q', title=noun),
+        color='Metric Name:N',
+        tooltip=['Metric Name', 'Metric Value', 'Job ID']
+    ).add_selection(selection).interactive()
+    
+    nodes = alt.Chart(
+        plan_metrics_df.reset_index()
+    ).mark_bar().encode(
+        x='plan_node:N',
+        y=alt.Y('sum(Metric Value):Q', title=noun),
+        color='Metric Name:N',
+        tooltip=['Metric Name', 'Metric Value', 'simpleString']
+    ).transform_filter(
+        selection
+    ).interactive()
+
+    return alt.vconcat(jobs, nodes)
+
+
+
 def layered_stage_and_task_charts(task_layers, noun="Time"):
     
     selection = alt.selection_multi(name="selector_SelectorName", fields=['Stage ID'], empty='none')
@@ -483,13 +513,17 @@ def safe_write(df, table, db, **kwargs):
 
 def plan_metrics_rollup(df):
     return df.groupBy(
-        ["plan_node", "accumulatorId", "Application ID", "Application Name", "Task ID", "Stage ID", "Job ID"]
+        ["plan_node", "accumulatorId", "Task ID"]
     ).agg(
         F.sum("Metric Value").alias("Metric Value"),
         F.min("nodeName").alias("nodeName"),
         F.min("simpleString").alias("simpleString"), 
         F.min("metricType").alias("metricType"),
-        F.min("name").alias("Metric Name")
+        F.min("name").alias("Metric Name"),
+        F.min("Stage ID").alias("Stage ID"),
+        F.min("Job ID").alias("Job ID"),
+        F.min("Application ID").alias("Application ID"),
+        F.min("Application Name").alias("Application Name")
     ).withColumn(
         "Metric Value", 
         F.when(
