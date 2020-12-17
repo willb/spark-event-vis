@@ -8,6 +8,8 @@ from collections import namedtuple
 appmeta = None
 sparkSession = None
 options = dict()
+all_stage_meta_df = None
+
 
 def init_eventlog(df, **kwargs):
     global sparkSession, options
@@ -32,13 +34,21 @@ def raw_job_info(df):
     starts = df.where(F.col("Event") == "SparkListenerJobStart").select('Job ID', 'Submission Time', 'Stage IDs', 'Stage Infos', 'Properties')
     ends = df.where(F.col("Event") == "SparkListenerJobEnd").select('Job ID', 'Completion Time', 'Job Result.Result')
 
+    starts.createOrReplaceTempView("job_start_events")
+    ends.createOrReplaceTempView("job_end_events")
+
     jobs = starts.join(ends, "Job ID").withColumn("JobDuration", F.col("Completion Time") - F.col("Submission Time")).withColumn("Submission Date", F.from_unixtime(F.col("Submission Time") / 1000))
     return jobs
 
 def all_stage_meta(df):
-    jobs = raw_job_info(df)
-    allmeta = jobs.select('Job ID', F.explode('Stage Infos').alias('Stage Info')).select('Job ID', 'Stage Info.*')
-    return allmeta
+    global all_stage_meta_df
+    if all_stage_meta_df is None:
+        jobs = raw_job_info(df)
+        all_stage_meta_df = jobs.select('Job ID', F.explode('Stage Infos').alias('Stage Info')).select('Job ID', 'Stage Info.*')
+        all_stage_meta_df.createOrReplaceTempView("all_stage_meta")
+        return all_stage_meta_df
+    else:
+        return all_stage_meta_df
 
 def stage_meta(df):
     return all_stage_meta(df).drop('Parent IDs', 'RDD Info', 'Accumulables')
@@ -57,7 +67,7 @@ def stage_rddparents(df):
     return stage_rddinfo(df).select('Job ID', 'Stage ID', 'RDD ID', F.explode('Parent IDs').alias('RDD Parent ID'))
 
 def job_info(df):
-    return raw_job_info(df).drop('Stage IDs', 'Stage Infos', 'Properties')
+    return raw_job_info(df).withColumn('SQLExecutionID', F.col('Properties.`spark.sql.execution.id`')).drop('Stage IDs', 'Stage Infos', 'Properties')
 
 def collect_and_dictify(df):
     return [json.loads(row[0]) for row in df.selectExpr("to_json(*)").collect()]
@@ -69,8 +79,8 @@ def executor_info(df):
 def plan_dicts(df):
     return collect_and_dictify(df.select("sparkPlanInfo").dropna())
 
-MetricNode = namedtuple("MetricNode", "plan_node accumulatorId metricType name")
-PlanInfoNode = namedtuple("PlanInfoNode", "plan_node parent nodeName simpleString")
+MetricNode = namedtuple("MetricNode", "execution_id plan_node accumulatorId metricType name")
+PlanInfoNode = namedtuple("PlanInfoNode", "execution_id plan_node parent nodeName simpleString")
 
 def nextid():
     i = 0
@@ -81,23 +91,34 @@ def nextid():
 node_ctr = nextid()
 
 def plan_dicts(df):
-    return collect_and_dictify(df.select("sparkPlanInfo").dropna())
+    # metrics.select("executionId", "sparkPlanInfo").dropna().select(F.struct("executionId", "sparkPlanInfo"))
+    return collect_and_dictify(df.select("executionId", "sparkPlanInfo").dropna().select(F.struct("executionId", "sparkPlanInfo")))
 
-def flatplan(dicts, parent=-1, plan_nodes=None, metric_nodes=None):
+def flatplan(dicts, parent=-1, execution_id=-1, plan_nodes=None, metric_nodes=None):
     if plan_nodes is None:
         plan_nodes = list()
         
     if metric_nodes is None:
         metric_nodes = list()
     
-    for pd in dicts:
+    # FIXME:  this could be cleaner by handling (executionID, sparkPlanInfo) and (children) structs with different code paths entirely
+    for epd in dicts:
+        if execution_id == -1 or 'execution_id' in epd:
+            execution_id = epd['executionId']
+        
+        if 'sparkPlanInfo' in epd:
+            pd = epd['sparkPlanInfo']
+        else:
+            pd = epd
+
         pid = next(node_ctr)
+
         for m in pd['metrics']:
-            metric_nodes.append(MetricNode(pid, m['accumulatorId'], m['metricType'], m['name']))
+            metric_nodes.append(MetricNode(execution_id, pid, m['accumulatorId'], m['metricType'], m['name']))
         
-        plan_nodes.append(PlanInfoNode(pid, parent, pd['nodeName'], pd['simpleString']))
+        plan_nodes.append(PlanInfoNode(execution_id, pid, parent, pd['nodeName'], pd['simpleString']))
         
-        flatplan(pd['children'], pid, plan_nodes, metric_nodes)
+        flatplan(pd['children'], pid, execution_id, plan_nodes, metric_nodes)
     
     return(plan_nodes, metric_nodes)
 
@@ -109,6 +130,11 @@ def plan_dfs(df):
     mndf = with_appmeta(spark.createDataFrame(data=mn))
     
     return (pndf, mndf)
+
+
+def sql_info(df):
+    return df.where(F.col('Event') == 'org.apache.spark.sql.execution.ui.SparkListenerSQLExecutionStart').select("executionId", "description", "details")
+
 
 def tasks_to_stages(df):
     return df.where(F.col('Event') == 'SparkListenerTaskStart').select(F.col("Task Info.Task ID").alias('Task ID'), 'Stage ID')
