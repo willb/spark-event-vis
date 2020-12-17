@@ -67,7 +67,11 @@ def stage_rddparents(df):
     return stage_rddinfo(df).select('Job ID', 'Stage ID', 'RDD ID', F.explode('Parent IDs').alias('RDD Parent ID'))
 
 def job_info(df):
-    return raw_job_info(df).withColumn('SQLExecutionID', F.col('Properties.`spark.sql.execution.id`')).drop('Stage IDs', 'Stage Infos', 'Properties')
+    rji = raw_job_info(df)
+    if 'spark.sql.execution.id' in set([f.name for f in rji.select('Properties.*').schema]):
+        return raw_job_info(df).withColumn('SQLExecutionID', F.col('Properties.`spark.sql.execution.id`')).drop('Stage IDs', 'Stage Infos', 'Properties')
+    else:
+        return raw_job_info(df).withColumn('SQLExecutionID', F.lit(None)).drop('Stage IDs', 'Stage Infos', 'Properties')
 
 def collect_and_dictify(df):
     return [json.loads(row[0]) for row in df.selectExpr("to_json(*)").collect()]
