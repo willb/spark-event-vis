@@ -107,7 +107,7 @@ def flatplan(dicts, parent=-1, execution_id=-1, plan_nodes=None, metric_nodes=No
     
     # FIXME:  this could be cleaner by handling (executionID, sparkPlanInfo) and (children) structs with different code paths entirely
     for epd in dicts:
-        if execution_id == -1 or 'execution_id' in epd:
+        if execution_id == -1 or 'executionId' in epd:
             execution_id = epd['executionId']
         
         if 'sparkPlanInfo' in epd:
