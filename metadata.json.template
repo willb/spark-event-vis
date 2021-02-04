@@ -12,7 +12,7 @@
                     "sql" : "select * from (select accumulables.plan_node, accumulables.accumulatorId, nodeName, case metricType when 'nsTiming' then 'timing' else metricType end as metricType, name, case metricType when 'nsTiming' then sum([Metric Value] / 1000000) else sum([Metric Value]) end as Value, [Task ID], [Stage ID], [Job ID], simpleString, accumulables.[Application ID] from accumulables join plans on accumulables.plan_node = plans.plan_node join task_metrics on accumulables.accumulatorId = task_metrics.accumulatorId group by accumulables.plan_node, accumulables.accumulatorId) where metricType = 'timing'"
                 },
                 "plan-graph" : {
-                    "sql" : "select execution_id, description, plan_node, parent, simpleString from plans join sql_info on execution_id "
+                    "sql" : "select execution_id, description, plan_node, parent, simpleString from plans join sql_info on plans.execution_id = sql_info.executionId "
                 },
                 "byte-stage-metrics": {
                     "sql": "select rowid, [Stage ID], min([Metric Name]) as [Metric Name], accumulatorId, sum([Metric Value]) as Value, [Application ID], [Application Name], kind, unit, [Job ID] from task_metrics where [Metric Name] like \"%bytes%\" group by [Stage ID], [Metric Name]"
