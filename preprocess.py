@@ -7,7 +7,7 @@ import sqlite3
 
 parser = parser = argparse.ArgumentParser()
 parser.add_argument('--master', help='Spark master URL (default: "local[*]")', default="local[*]")
-parser.add_argument('--outdir', help='where to store postprocessed notebooks and per-app databases (default: "outputs")', default="outputs")
+parser.add_argument('--outdir', help='where to store postprocessed notebooks, per-app databases, and canned-query template (default: "outputs")', default="outputs")
 parser.add_argument('--per-app-db', help='use a separate output database for each event log', action='store_true', default=False)
 parser.add_argument('--fail-fast', help='terminate if processing a single log fails', action='store_true', default=False)
 parser.add_argument('--db', help='database file to store/append aggregated postprocessed events to (default="wide-output.db")', default="wide-output.db")
@@ -26,12 +26,14 @@ if __name__ == '__main__':
     os.makedirs(args.outdir, exist_ok=True)
 
     failed = []
+    succeeded = []
 
     for log in args.files:
-        rendered_notebook = os.path.join(args.outdir, '%s-rendered.ipynb' % os.path.basename(log))
-        stdoutfile = os.path.join(args.outdir, '%s.out' % os.path.basename(log))
-        stderrfile = os.path.join(args.outdir, '%s.err' % os.path.basename(log))
-        dbfile = os.path.join(args.outdir, '%s.db' % os.path.basename(log))
+        baselog = os.path.basename(log)
+        rendered_notebook = os.path.join(args.outdir, '%s-rendered.ipynb' % baselog)
+        stdoutfile = os.path.join(args.outdir, '%s.out' % baselog)
+        stderrfile = os.path.join(args.outdir, '%s.err' % baselog)
+        dbfile = os.path.join(args.outdir, '%s.db' % baselog)
 
         print("processing %s --> %s " % (log, rendered_notebook))
         
@@ -52,6 +54,9 @@ if __name__ == '__main__':
                     if args.per_app_db:
                         print("optimizing per-app db...")
                         vacuum_analyze(the_db)
+                    
+                    succeeded.append(baselog)
+                    
                 except:
                     failed.append(log)
                     print("failed to process file %s" % log)
@@ -61,6 +66,20 @@ if __name__ == '__main__':
     
     print("optimizing wide database...")
     vacuum_analyze(args.db)
+
+    if args.per_app_db:
+        import json
+        print("generating canned-query templates...")
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.json.template"), "r") as tmpl:
+            template = json.load(tmpl)
+            app_queries = template["databases"]["APP"]
+            for app in succeeded:
+                template["databases"][app] = app_queries
+            
+            del template["databases"]["APP"]
+
+            with open(os.path.join(args.outdir, "metadata.json"), "w") as out_tmpl:
+                json.dump(template, out_tmpl)
 
     print("completed %d of %d logs successfully" % (len(args.files) - len(failed), len(args.files)))
     for failure in failed:

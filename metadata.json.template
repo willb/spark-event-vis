@@ -15,7 +15,7 @@
                     "sql" : "select execution_id, description, plan_node, parent, simpleString from plans join sql_info on execution_id "
                 },
                 "byte-stage-metrics": {
-                    "sql": "select rowid, [Stage ID], min([Metric Name]) as [Metric Name], accumulatorId, sum([Metric Value]) as Value, [Application ID], [Application Name], kind, unit, [Job ID] from task_metrics where [Metric Name] like "%bytes%" group by [Stage ID], [Metric Name]"
+                    "sql": "select rowid, [Stage ID], min([Metric Name]) as [Metric Name], accumulatorId, sum([Metric Value]) as Value, [Application ID], [Application Name], kind, unit, [Job ID] from task_metrics where [Metric Name] like \"%bytes%\" group by [Stage ID], [Metric Name]"
                 }
             }
         }
