@@ -18,6 +18,7 @@ def init_eventlog(df, **kwargs):
         options[k] = v
     with_appmeta(df)
 
+
 def with_appmeta(df):
     global appmeta
 
@@ -90,6 +91,7 @@ def plan_dicts(df):
 
 MetricNode = namedtuple("MetricNode", "execution_id plan_node accumulatorId metricType name")
 PlanInfoNode = namedtuple("PlanInfoNode", "execution_id plan_node parent nodeName simpleString")
+PlanNodeMeta = namedtuple("PlanNodeMeta", "execution_id plan_node key value")
 
 def nextid():
     i = 0
@@ -103,12 +105,15 @@ def plan_dicts(df):
     # metrics.select("executionId", "sparkPlanInfo").dropna().select(F.struct("executionId", "sparkPlanInfo"))
     return collect_and_dictify(df.select("executionId", "sparkPlanInfo").dropna().select(F.struct("executionId", "sparkPlanInfo")))
 
-def flatplan(dicts, parent=-1, execution_id=-1, plan_nodes=None, metric_nodes=None):
+def flatplan(dicts, parent=-1, execution_id=-1, plan_nodes=None, metric_nodes=None, meta_nodes=None):
     if plan_nodes is None:
         plan_nodes = list()
         
     if metric_nodes is None:
         metric_nodes = list()
+
+    if meta_nodes is None:
+        meta_nodes = list()
     
     # FIXME:  this could be cleaner by handling (executionID, sparkPlanInfo) and (children) structs with different code paths entirely
     for epd in dicts:
@@ -125,20 +130,26 @@ def flatplan(dicts, parent=-1, execution_id=-1, plan_nodes=None, metric_nodes=No
         for m in pd['metrics']:
             metric_nodes.append(MetricNode(execution_id, pid, m['accumulatorId'], m['metricType'], m['name']))
         
+
+        if 'metadata' in pd:
+            for k, v in pd['metadata'].items():
+                meta_nodes.append(PlanNodeMeta(execution_id, pid, k, v))
+
         plan_nodes.append(PlanInfoNode(execution_id, pid, parent, pd['nodeName'], pd['simpleString']))
         
-        flatplan(pd['children'], pid, execution_id, plan_nodes, metric_nodes)
+        flatplan(pd['children'], pid, execution_id, plan_nodes, metric_nodes, meta_nodes)
     
-    return(plan_nodes, metric_nodes)
+    return(plan_nodes, metric_nodes, meta_nodes)
 
 def plan_dfs(df):
     spark = session_from_df(df)
-    pn, mn = flatplan(plan_dicts(df))
+    pn, mn, metn = flatplan(plan_dicts(df))
     
     pndf = with_appmeta(spark.createDataFrame(data=pn))
     mndf = with_appmeta(spark.createDataFrame(data=mn))
-    
-    return (pndf, mndf)
+    metadf = with_appmeta(spark.createDataFrame(data=metn))
+
+    return (pndf, mndf, metadf)
 
 
 def sql_info(df):
