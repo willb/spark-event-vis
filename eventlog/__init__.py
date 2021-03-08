@@ -33,6 +33,19 @@ def event_types(df):
     return [e[0] for e in df.select(df.Event).distinct().collect()]
 
 
+def driver_accumulator_updates(df):
+    return df.where(
+        df.Event == 'org.apache.spark.sql.execution.ui.SparkListenerDriverAccumUpdates'
+    ).select(
+        "executionId", F.explode("accumUpdates").alias("updates")
+    ).select(
+        "executionId",
+        F.element_at(F.col("updates"), 1).alias("accumulator"),
+        F.element_at(F.col("updates"), 2).alias("value")
+    )
+    
+
+
 def session_from_df(df):
     return df.sql_ctx.sparkSession
 
