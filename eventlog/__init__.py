@@ -11,6 +11,10 @@ options = dict()
 all_stage_meta_df = None
 
 
+def drop_null_cols(df):
+    return df.select(*[col for col in df.columns if df.select(col).dropna().count() > 0])
+
+
 def init_eventlog(df, **kwargs):
     global sparkSession, options
     sparkSession = df.sql_ctx.sparkSession
@@ -32,6 +36,19 @@ def with_appmeta(df):
 def event_types(df):
     return [e[0] for e in df.select(df.Event).distinct().collect()]
 
+def session_from_df(df):
+    return df.sql_ctx.sparkSession
+
+def raw_job_info(df):
+    starts = df.where(F.col("Event") == "SparkListenerJobStart").select('Job ID', 'Submission Time', 'Stage IDs', 'Stage Infos', 'Properties')
+    ends = df.where(F.col("Event") == "SparkListenerJobEnd").select('Job ID', 'Completion Time', 'Job Result.Result')
+
+    starts.createOrReplaceTempView("job_start_events")
+    ends.createOrReplaceTempView("job_end_events")
+
+    jobs = starts.join(ends, "Job ID").withColumn("JobDuration", F.col("Completion Time") - F.col("Submission Time")).withColumn("Submission Date", F.from_unixtime(F.col("Submission Time") / 1000))
+    return jobs
+
 
 def driver_accumulator_updates(df):
     return df.where(
@@ -45,19 +62,80 @@ def driver_accumulator_updates(df):
     )
     
 
+def app_timeline(df):
+    app_starts = df.where(
+        df.Event == "SparkListenerApplicationStart"
+    ).select(
+        F.col("App ID"),
+        F.col("App Name"),
+        F.col("Timestamp").alias("Start Time")
+    )
 
-def session_from_df(df):
-    return df.sql_ctx.sparkSession
+    app_ends = df.where(
+        df.Event == "SparkListenerApplicationEnd"
+    ).select(
+        F.col("Timestamp").alias("Finish Time")
+    )
 
-def raw_job_info(df):
-    starts = df.where(F.col("Event") == "SparkListenerJobStart").select('Job ID', 'Submission Time', 'Stage IDs', 'Stage Infos', 'Properties')
-    ends = df.where(F.col("Event") == "SparkListenerJobEnd").select('Job ID', 'Completion Time', 'Job Result.Result')
+    return app_starts.join(app_ends, F.lit(True)).select(
+        F.lit("Application").alias("What"),
+        "App ID", 
+        "App Name",
+        "Start Time",
+        "Finish Time"
+    )
+    
 
-    starts.createOrReplaceTempView("job_start_events")
-    ends.createOrReplaceTempView("job_end_events")
+def job_timeline(df):
+    jobstarts = df.where(
+        df.Event == "SparkListenerJobStart"
+    ).select( 
+        "Job ID",
+        F.col("Submission Time").alias("Start Time")
+    )
 
-    jobs = starts.join(ends, "Job ID").withColumn("JobDuration", F.col("Completion Time") - F.col("Submission Time")).withColumn("Submission Date", F.from_unixtime(F.col("Submission Time") / 1000))
-    return jobs
+    jobends = df.where(
+        df.Event == "SparkListenerJobEnd"
+    ).select( 
+        "Job ID", 
+        F.col("Completion Time").alias("Finish Time"), 
+        "Job Result"
+    )
+
+    return jobstarts.join(jobends, "Job ID").select(
+        F.lit("Job").alias("What"),
+        jobstarts["Job ID"],
+        "Start Time",
+        "Finish Time",
+        "Job Result"
+    )
+
+def sql_timeline(df):
+    prefixlen = F.length(F.lit("org.apache.spark.sql.execution.ui."))
+    short_event = F.col("Event").substr(prefixlen + 1, F.length(F.col("Event")) - prefixlen)
+
+    ex_starts = df.where(
+        df.Event == "org.apache.spark.sql.execution.ui.SparkListenerSQLExecutionStart"
+    ).select(
+        "executionId",
+        F.col("time").alias("Start Time")
+    )
+
+    ex_fins = df.where(
+        df.Event == "org.apache.spark.sql.execution.ui.SparkListenerSQLExecutionEnd"
+    ).select(
+        "executionId",
+        F.col("time").alias("Finish Time")
+    )
+
+    return ex_starts.join(ex_fins, "executionID").select(
+        F.lit("SQL").alias("What"),
+        ex_starts.executionId,
+        "Start Time",
+        "Finish Time"
+    )
+
+
 
 def all_stage_meta(df):
     global all_stage_meta_df
