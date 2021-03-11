@@ -77,13 +77,17 @@ def app_timeline(df):
         F.col("Timestamp").alias("Finish Time")
     )
 
-    return app_starts.join(app_ends, F.lit(True)).select(
+    timeline = app_starts.join(app_ends, F.lit(True)).select(
         F.lit("Application").alias("What"),
         "App ID", 
         "App Name",
         "Start Time",
         "Finish Time"
     )
+
+    timeline.createOrReplaceTempView("app_timeline")
+
+    return timeline
     
 
 def job_timeline(df):
@@ -99,16 +103,20 @@ def job_timeline(df):
     ).select( 
         "Job ID", 
         F.col("Completion Time").alias("Finish Time"), 
-        "Job Result"
+        F.col("Job Result.Result").alias("Job Result")
     )
 
-    return jobstarts.join(jobends, "Job ID").select(
+    timeline = jobstarts.join(jobends, "Job ID").select(
         F.lit("Job").alias("What"),
         jobstarts["Job ID"],
         "Start Time",
         "Finish Time",
         "Job Result"
     )
+
+    timeline.createOrReplaceTempView("job_timeline")
+
+    return timeline
 
 def sql_timeline(df):
     prefixlen = F.length(F.lit("org.apache.spark.sql.execution.ui."))
@@ -128,13 +136,16 @@ def sql_timeline(df):
         F.col("time").alias("Finish Time")
     )
 
-    return ex_starts.join(ex_fins, "executionID").select(
+    timeline = ex_starts.join(ex_fins, "executionID").select(
         F.lit("SQL").alias("What"),
         ex_starts.executionId,
         "Start Time",
         "Finish Time"
     )
 
+    timeline.createOrReplaceTempView("sql_timeline")    
+
+    return timeline
 
 
 def all_stage_meta(df):
@@ -238,7 +249,7 @@ def plan_dfs(df):
     
     pndf = with_appmeta(spark.createDataFrame(data=pn))
     mndf = with_appmeta(spark.createDataFrame(data=mn))
-    metadf = with_appmeta(spark.createDataFrame(data=metn))
+    metadf = with_appmeta(spark.createDataFrame(data=metn, schema="execution_id:int,plan_node:int,key:string,value:string"))
 
     return (pndf, mndf, metadf)
 
@@ -339,7 +350,7 @@ def explicit_task_metrics(df, noun="Task"):
             )
         )
     
-    return result
+    return result.dropna(subset=["accumulatorID"])
 
 def tidy_metrics(df, noun='Task', event=None, interesting_metrics=None, extra_cols=[]):
     mcol = '%s Info' % noun
