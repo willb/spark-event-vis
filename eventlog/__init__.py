@@ -11,12 +11,17 @@ options = dict()
 all_stage_meta_df = None
 
 
+def drop_null_cols(df):
+    return df.select(*[col for col in df.columns if df.select(col).dropna().count() > 0])
+
+
 def init_eventlog(df, **kwargs):
     global sparkSession, options
     sparkSession = df.sql_ctx.sparkSession
     for k, v in kwargs.items():
         options[k] = v
     with_appmeta(df)
+
 
 def with_appmeta(df):
     global appmeta
@@ -26,6 +31,10 @@ def with_appmeta(df):
     
     app_id, app_name = appmeta
     return df.withColumn("Application ID", F.lit(app_id)).withColumn("Application Name", F.lit(app_name))
+
+
+def event_types(df):
+    return [e[0] for e in df.select(df.Event).distinct().collect()]
 
 def session_from_df(df):
     return df.sql_ctx.sparkSession
@@ -39,6 +48,105 @@ def raw_job_info(df):
 
     jobs = starts.join(ends, "Job ID").withColumn("JobDuration", F.col("Completion Time") - F.col("Submission Time")).withColumn("Submission Date", F.from_unixtime(F.col("Submission Time") / 1000))
     return jobs
+
+
+def driver_accumulator_updates(df):
+    return df.where(
+        df.Event == 'org.apache.spark.sql.execution.ui.SparkListenerDriverAccumUpdates'
+    ).select(
+        "executionId", F.explode("accumUpdates").alias("updates")
+    ).select(
+        "executionId",
+        F.element_at(F.col("updates"), 1).alias("accumulator"),
+        F.element_at(F.col("updates"), 2).alias("value")
+    )
+    
+
+def app_timeline(df):
+    app_starts = df.where(
+        df.Event == "SparkListenerApplicationStart"
+    ).select(
+        F.col("App ID"),
+        F.col("App Name"),
+        F.col("Timestamp").alias("Start Time")
+    )
+
+    app_ends = df.where(
+        df.Event == "SparkListenerApplicationEnd"
+    ).select(
+        F.col("Timestamp").alias("Finish Time")
+    )
+
+    timeline = app_starts.join(app_ends, F.lit(True)).select(
+        F.lit("Application").alias("What"),
+        "App ID", 
+        "App Name",
+        "Start Time",
+        "Finish Time"
+    )
+
+    timeline.createOrReplaceTempView("app_timeline")
+
+    return timeline
+    
+
+def job_timeline(df):
+    jobstarts = df.where(
+        df.Event == "SparkListenerJobStart"
+    ).select( 
+        "Job ID",
+        F.col("Submission Time").alias("Start Time")
+    )
+
+    jobends = df.where(
+        df.Event == "SparkListenerJobEnd"
+    ).select( 
+        "Job ID", 
+        F.col("Completion Time").alias("Finish Time"), 
+        F.col("Job Result.Result").alias("Job Result")
+    )
+
+    timeline = jobstarts.join(jobends, "Job ID").select(
+        F.lit("Job").alias("What"),
+        jobstarts["Job ID"],
+        "Start Time",
+        "Finish Time",
+        "Job Result"
+    )
+
+    timeline.createOrReplaceTempView("job_timeline")
+
+    return timeline
+
+def sql_timeline(df):
+    prefixlen = F.length(F.lit("org.apache.spark.sql.execution.ui."))
+    short_event = F.col("Event").substr(prefixlen + 1, F.length(F.col("Event")) - prefixlen)
+
+    ex_starts = df.where(
+        df.Event == "org.apache.spark.sql.execution.ui.SparkListenerSQLExecutionStart"
+    ).select(
+        "executionId",
+        F.col("time").alias("Start Time")
+    )
+
+    ex_fins = df.where(
+        df.Event == "org.apache.spark.sql.execution.ui.SparkListenerSQLExecutionEnd"
+    ).select(
+        "executionId",
+        F.col("time").alias("Finish Time")
+    )
+
+    timeline = ex_starts.join(ex_fins, "executionID").select(
+        F.lit("SQL").alias("What"),
+        ex_starts.executionId,
+        "Start Time",
+        "Finish Time"
+    )
+
+    timeline.createOrReplaceTempView("sql_timeline")    
+
+    return timeline
+
 
 def all_stage_meta(df):
     global all_stage_meta_df
@@ -85,6 +193,7 @@ def plan_dicts(df):
 
 MetricNode = namedtuple("MetricNode", "execution_id plan_node accumulatorId metricType name")
 PlanInfoNode = namedtuple("PlanInfoNode", "execution_id plan_node parent nodeName simpleString")
+PlanNodeMeta = namedtuple("PlanNodeMeta", "execution_id plan_node key value")
 
 def nextid():
     i = 0
@@ -98,12 +207,15 @@ def plan_dicts(df):
     # metrics.select("executionId", "sparkPlanInfo").dropna().select(F.struct("executionId", "sparkPlanInfo"))
     return collect_and_dictify(df.select("executionId", "sparkPlanInfo").dropna().select(F.struct("executionId", "sparkPlanInfo")))
 
-def flatplan(dicts, parent=-1, execution_id=-1, plan_nodes=None, metric_nodes=None):
+def flatplan(dicts, parent=-1, execution_id=-1, plan_nodes=None, metric_nodes=None, meta_nodes=None):
     if plan_nodes is None:
         plan_nodes = list()
         
     if metric_nodes is None:
         metric_nodes = list()
+
+    if meta_nodes is None:
+        meta_nodes = list()
     
     # FIXME:  this could be cleaner by handling (executionID, sparkPlanInfo) and (children) structs with different code paths entirely
     for epd in dicts:
@@ -120,20 +232,26 @@ def flatplan(dicts, parent=-1, execution_id=-1, plan_nodes=None, metric_nodes=No
         for m in pd['metrics']:
             metric_nodes.append(MetricNode(execution_id, pid, m['accumulatorId'], m['metricType'], m['name']))
         
+
+        if 'metadata' in pd:
+            for k, v in pd['metadata'].items():
+                meta_nodes.append(PlanNodeMeta(execution_id, pid, k, v))
+
         plan_nodes.append(PlanInfoNode(execution_id, pid, parent, pd['nodeName'], pd['simpleString']))
         
-        flatplan(pd['children'], pid, execution_id, plan_nodes, metric_nodes)
+        flatplan(pd['children'], pid, execution_id, plan_nodes, metric_nodes, meta_nodes)
     
-    return(plan_nodes, metric_nodes)
+    return(plan_nodes, metric_nodes, meta_nodes)
 
 def plan_dfs(df):
     spark = session_from_df(df)
-    pn, mn = flatplan(plan_dicts(df))
+    pn, mn, metn = flatplan(plan_dicts(df))
     
     pndf = with_appmeta(spark.createDataFrame(data=pn))
     mndf = with_appmeta(spark.createDataFrame(data=mn))
-    
-    return (pndf, mndf)
+    metadf = with_appmeta(spark.createDataFrame(data=metn, schema="execution_id:int,plan_node:int,key:string,value:string"))
+
+    return (pndf, mndf, metadf)
 
 
 def sql_info(df):
@@ -232,7 +350,7 @@ def explicit_task_metrics(df, noun="Task"):
             )
         )
     
-    return result
+    return result.dropna(subset=["accumulatorID"])
 
 def tidy_metrics(df, noun='Task', event=None, interesting_metrics=None, extra_cols=[]):
     mcol = '%s Info' % noun
